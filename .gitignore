@@ -1,0 +1,33 @@
+# General
+.DS_Store
+.env
+.env.*
+*.log
+logs/
+
+# Editor settings
+.vscode/
+.idea/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+.eslintcache
+
+# Python
+.venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+
+# Build artifacts
+dist/
+build/
+*.sqlite3
+*.zip

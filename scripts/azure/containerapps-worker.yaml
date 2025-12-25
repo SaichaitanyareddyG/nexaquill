@@ -1,0 +1,29 @@
+name: nexaquill-worker
+location: Sweden Central
+type: Microsoft.App/containerApps
+properties:
+  managedEnvironmentId: /subscriptions/1188dc24-cd5e-4d58-81b4-8def1fa61768/resourceGroups/nexaquill-rg/providers/Microsoft.App/managedEnvironments/nexaquill-env
+  configuration:
+    secrets:
+      - name: acr
+        value: KIcFQ/rNDzEYxWlqCx4xklxoq27p7vYkkIOADNTV0y+ACRA6F7hm
+    registries:
+      - server: nexaquillacr12230947.azurecr.io
+        username: nexaquillacr12230947
+        passwordSecretRef: acr
+    ingress: null
+  template:
+    containers:
+      - name: nexaquill-worker
+        image: nexaquillacr12230947.azurecr.io/nexaquill-backend:prod
+        command:
+          - python
+        args:
+          - -m
+          - nexaquill_api.worker
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+    scale:
+      minReplicas: 0
+      maxReplicas: 1

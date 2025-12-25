@@ -1,0 +1,178 @@
+Metadata-Version: 2.4
+Name: nexaquill-backend
+Version: 0.1.0
+Summary: FastAPI service for the NexaQuill prototype
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi==0.111.0
+Requires-Dist: uvicorn[standard]==0.30.1
+Requires-Dist: httpx==0.27.0
+Requires-Dist: pydantic-settings==2.3.4
+Requires-Dist: python-dotenv==1.0.1
+Requires-Dist: sqlalchemy==2.0.31
+Requires-Dist: psycopg[binary]==3.2.1
+Requires-Dist: alembic==1.13.2
+Requires-Dist: azure-storage-blob==12.20.0
+Requires-Dist: azure-storage-queue==12.8.0
+Requires-Dist: azure-ai-formrecognizer>=3.3.0
+Requires-Dist: fpdf2==2.7.9
+Requires-Dist: pgvector==0.2.5
+Requires-Dist: python-jose[cryptography]==3.3.0
+Provides-Extra: dev
+Requires-Dist: pytest==8.2.2; extra == "dev"
+
+# NexaQuill Backend
+
+FastAPI service that brokers NexaQuill realtime sessions and supporting tool APIs.
+
+## Quickstart
+
+```bash
+uv sync --extra dev
+uv run uvicorn nexaquill_api.main:app --reload --port 8000
+```
+
+If you are using the Azure Queue worker for OCR, start it in another terminal:
+
+```bash
+uv run python -m nexaquill_api.worker
+```
+
+Copy `.env.example` to `.env` and populate secrets before running locally. At minimum you’ll
+need an `OPENAI_API_KEY`; the other values have useful defaults for testing with OpenAI’s
+realtime and responses endpoints.
+
+## Core Responsibilities
+
+- Session storage (Postgres).
+- Upload intake (Azure Blob).
+- OCR per-page extraction (Azure Document Intelligence).
+- Chat + suggestions + realtime (Azure OpenAI / OpenAI fallback).
+- Document Q&A with citations.
+- Session cleanup (delete session + uploads).
+- URL ingestion for on-demand link reading.
+- Streaming responses (SSE) for faster UI updates.
+
+## Azure resources (recommended)
+
+Create these services in your Azure subscription:
+
+- **Azure OpenAI** resource (deploy `gpt-4o`, `gpt-4o-mini`, `gpt-4o-realtime`).
+- **Storage account** (Blob Storage) with a private container (e.g., `nexa-uploads`).
+- **Azure Queue** (for OCR jobs).
+- **Document Intelligence** (formerly Form Recognizer).
+- **Azure Database for PostgreSQL** (flexible server).
+
+Suggested regions: keep everything in the same region (e.g., `swedencentral`) to reduce latency.
+
+### Storage CORS (browser uploads)
+
+Because uploads go directly from the browser to Azure Blob Storage, the storage account must allow CORS for your
+frontend origin (e.g., `http://localhost:3000`). Example:
+
+```bash
+az storage cors add \
+  --services b \
+  --methods GET PUT POST HEAD OPTIONS \
+  --origins "http://localhost:3000" "http://127.0.0.1:3000" \
+  --allowed-headers "*" \
+  --exposed-headers "*" \
+  --max-age 3600 \
+  --account-name <storage-account>
+```
+
+## Environment configuration
+
+Minimum Azure-backed config for the backend:
+
+```bash
+# Azure OpenAI
+AZURE_OPENAI_API_KEY="..."
+AZURE_OPENAI_ENDPOINT="https://<your-aoai>.openai.azure.com"
+AZURE_OPENAI_API_VERSION="2025-04-01-preview"
+AZURE_OPENAI_DEPLOYMENT_CHAT="gpt-4o"
+AZURE_OPENAI_DEPLOYMENT_SUGGEST="gpt-4o-mini"
+AZURE_OPENAI_DEPLOYMENT_EMBEDDING="text-embedding-3-small"
+AZURE_OPENAI_REALTIME_MODEL="gpt-4o-realtime"
+AZURE_OPENAI_REALTIME_SESSIONS_URL="https://<your-aoai>.openai.azure.com/openai/realtimeapi/sessions?api-version=2025-04-01-preview"
+AZURE_OPENAI_REALTIME_WEBRTC_URL="https://<your-aoai>.openai.azure.com/openai/realtime?api-version=2025-04-01-preview"
+
+# CORS (lock to your frontend origin)
+CORS_ALLOW_ORIGINS="https://your-frontend.example.com"
+
+# Storage
+AZURE_STORAGE_ACCOUNT_URL="https://<account>.blob.core.windows.net"
+AZURE_STORAGE_ACCOUNT_NAME="<account>"
+AZURE_STORAGE_ACCOUNT_KEY="..."
+AZURE_STORAGE_CONTAINER="nexa-uploads"
+
+# Queue (optional but recommended)
+AZURE_QUEUE_NAME="nexaquill-ocr"
+AZURE_QUEUE_CONNECTION_STRING="..."
+
+# Document Intelligence
+AZURE_FORM_RECOGNIZER_ENDPOINT="https://<region>.api.cognitive.microsoft.com"
+AZURE_FORM_RECOGNIZER_KEY="..."
+
+# Database
+DATABASE_URL="postgresql+psycopg://user:pass@host:5432/nexaquill"
+```
+
+### Database & migrations
+
+1. Set `DATABASE_URL` in `backend/.env` (or export it in your shell). Any Postgres-compatible URL works, e.g. `postgresql+psycopg://user:pass@localhost:5432/nexaquill`.
+2. Apply the initial schema:
+
+```bash
+cd backend
+uv run alembic upgrade head
+```
+
+The latest migrations enable the `pgvector` extension for embedding search.
+
+3. Whenever you change the models under `src/nexaquill_api/db/models.py`, create a new migration:
+
+```bash
+uv run alembic revision --autogenerate -m "describe change"
+uv run alembic upgrade head
+```
+
+The FastAPI app reads the same `DATABASE_URL` for runtime queries.
+
+## Upload pipeline (PDF/image)
+
+1. `POST /uploads/presign` creates an upload row and returns a SAS URL.
+2. Client uploads bytes directly to Azure Blob.
+3. `POST /uploads/{id}/complete` marks the upload `processing` and enqueues OCR + summarisation.
+4. Run the worker (`uv run python -m nexaquill_api.worker`) to process queue jobs.
+5. Upload status becomes `ready/error`, and an assistant message is appended.
+6. `DELETE /uploads/{id}` removes the file + metadata if you need to discard an upload.
+
+### Session deletion
+
+`DELETE /sessions/{id}` removes the session, messages, upload metadata, and OCR chunks. Any upload blobs for the
+session are deleted when storage is configured.
+
+Per-page OCR text is stored in `upload_chunks` to enable file citations.
+If a file fails to process, you can re-run it with `POST /uploads/{id}/reprocess`.
+
+## Document Q&A + citations
+
+`POST /nexa/respond` accepts `upload_ids`. The backend retrieves relevant OCR pages and inserts them as a
+grounding system prompt. Responses include `sources` with a label like `filename (p2)` and a blob download URL.
+The streaming variant is `POST /nexa/respond/stream` (SSE).
+
+If the prompt contains HTTP(S) URLs, the backend fetches those pages, extracts text, and adds them as
+grounding sources with URL citations.
+
+## Admin maintenance
+
+`POST /admin/flush` truncates the backend log file. This requires `NEXA_SERVICE_SECRET` and a header:
+
+```
+x-nexa-admin-secret: <secret>
+```
+
+Call it with curl or use `scripts/flush-logs.sh`.
+
+Logs are written to `backend/logs/nexaquill.log`.
