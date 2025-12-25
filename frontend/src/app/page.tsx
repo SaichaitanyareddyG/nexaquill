@@ -2359,6 +2359,7 @@ type ApiSessionResponse = {
   updated_at?: string | null;
   messages?: ApiMessageResponse[];
   uploads?: ApiUploadResponse[];
+  suggestions?: string[] | null;
 };
 
 type ApiMessageResponse = {
@@ -2393,6 +2394,37 @@ function normalizeUploadStatus(value?: string | null): UploadRecord["status"] {
     default:
       return "processing";
   }
+}
+
+function toLocalSession(session: ApiSessionResponse): Session {
+  const createdAt = session.created_at ?? new Date().toISOString();
+  const messages: ConversationMessage[] = Array.isArray(session.messages)
+    ? session.messages
+        .filter((message): message is ApiMessageResponse => Boolean(message?.role && message?.text))
+        .map((message) => {
+          const timestampSource = message.created_at ?? createdAt;
+          const timestampDate = new Date(timestampSource);
+          return {
+            id: message.id ?? crypto.randomUUID(),
+            role: message.role === "assistant" ? "assistant" : "user",
+            text: message.text ?? "",
+            timestamp: Number.isNaN(timestampDate.getTime())
+              ? formatTimestamp(new Date())
+              : formatTimestamp(timestampDate),
+            status: "complete",
+          };
+        })
+    : [];
+  const uploads = Array.isArray(session.uploads) ? session.uploads.map(toLocalUpload) : [];
+  const title = session.title?.trim() || buildDefaultSessionTitle(createdAt ?? undefined);
+  return {
+    id: session.id,
+    title,
+    createdAt,
+    messages,
+    suggestions: session.suggestions && session.suggestions.length ? session.suggestions : [],
+    uploads,
+  };
 }
 
 function toLocalUpload(upload: ApiUploadResponse): UploadRecord {
@@ -2498,6 +2530,15 @@ async function appendMessageToBackend(
     loggerWarn("session-append", error);
     return null;
   }
+}
+
+function persistMessageToBackend(
+  sessionId: string,
+  role: "assistant" | "user",
+  text: string,
+  authToken?: string | null
+): Promise<Session | null> {
+  return appendMessageToBackend(sessionId, role, text, authToken);
 }
 
 async function createSessionWithWelcome(
