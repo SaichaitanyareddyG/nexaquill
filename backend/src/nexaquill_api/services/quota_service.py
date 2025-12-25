@@ -59,4 +59,3 @@ def ensure_voice_quota_available(user: User) -> None:
 def record_voice_usage(db: Session, user: User, *, tokens: int | None = None) -> User:
     amount = tokens if tokens and tokens > 0 else VOICE_SESSION_FALLBACK_TOKENS
     return crud.add_voice_token_usage(db, user, amount=amount)
-*** End of File
