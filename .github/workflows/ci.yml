@@ -155,8 +155,8 @@ jobs:
 
   automerge:
     name: Enable Auto Merge
-    needs: verify
-    if: github.event_name == 'pull_request' && needs.verify.result == 'success'
+    needs: deploy
+    if: github.event_name == 'pull_request' && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
