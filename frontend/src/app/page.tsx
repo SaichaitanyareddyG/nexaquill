@@ -10,6 +10,7 @@ import {
   type ResponseSource,
 } from "@/components/conversation-panel";
 import { ControlSidebar } from "@/components/control-sidebar";
+import { GuidedTour } from "@/components/guided-tour";
 import {
   RealtimeVoiceSession,
   type VoiceSessionState,
@@ -41,6 +42,15 @@ type Session = {
   uploads: UploadRecord[];
 };
 
+type QuotaInfo = {
+  limit?: number;
+  used?: number;
+};
+
+type RespondResult =
+  | { ok: true; reply: string; sources: ResponseSource[]; quota?: QuotaInfo }
+  | { ok: false; status: number; message: string; quota?: QuotaInfo };
+
 type DraftMessage = Omit<ConversationMessage, "id"> & { id?: string };
 
 type PendingAttachment = {
@@ -62,6 +72,24 @@ const starterSuggestions = [
   "Review upcoming reminders",
   "Draft a quick wellness check-in",
 ];
+
+const guidedTourSteps = [
+  {
+    title: "Welcome to NexaQuill",
+    body: "This workspace blends chat, voice, and document insights so you can move from idea to output without swapping tools.",
+  },
+  {
+    title: "Bring context with uploads",
+    body: "Drop PDFs or images into the composer. Nexa summarises them, cites sources, and lets you keep everything in one conversation.",
+  },
+  {
+    title: "Stay in control",
+    body: "Track usage, export notes, and jump into the admin console whenever you need to adjust quotas or review activity.",
+    cta: "Let's go",
+  },
+];
+
+const guidedTourStorageKey = "nexa-guided-tour:v1";
 
 const backendBase = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
@@ -146,6 +174,9 @@ export default function HomePage(): JSX.Element {
   const [useWebSources, setUseWebSources] = useState(false);
   const [isHydratingSessions, setIsHydratingSessions] = useState(true);
   const [shareLabel, setShareLabel] = useState("Share link");
+  const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
+  const [showGuidedTour, setShowGuidedTour] = useState(false);
+  const [guidedTourStepIndex, setGuidedTourStepIndex] = useState(0);
   const typingTimers = useRef<number[]>([]);
   const userTouchedSessionsRef = useRef(false);
   const hasHydratedSessionsRef = useRef(false);
@@ -313,6 +344,36 @@ export default function HomePage(): JSX.Element {
     setInput(value);
   }, []);
 
+  const guidedTourTotal = guidedTourSteps.length;
+  const currentGuidedTourStep =
+    guidedTourSteps[Math.min(guidedTourStepIndex, guidedTourTotal - 1)] ?? guidedTourSteps[0];
+
+  const completeGuidedTour = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(guidedTourStorageKey, new Date().toISOString());
+    }
+    setShowGuidedTour(false);
+  }, []);
+
+  const handleGuidedTourNext = useCallback(() => {
+    setGuidedTourStepIndex((prev) => {
+      const next = prev + 1;
+      if (next >= guidedTourTotal) {
+        completeGuidedTour();
+        return prev;
+      }
+      return next;
+    });
+  }, [completeGuidedTour, guidedTourTotal]);
+
+  const handleGuidedTourBack = useCallback(() => {
+    setGuidedTourStepIndex((prev) => Math.max(0, prev - 1));
+  }, []);
+
+  const handleGuidedTourSkip = useCallback(() => {
+    completeGuidedTour();
+  }, [completeGuidedTour]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -342,6 +403,19 @@ export default function HomePage(): JSX.Element {
   useEffect(() => {
     setShareLabel("Share link");
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!canUseApi || authStatus !== "authenticated") {
+      setShowGuidedTour(false);
+      return;
+    }
+    const seen = window.localStorage.getItem(guidedTourStorageKey);
+    if (!seen) {
+      setGuidedTourStepIndex(0);
+      setShowGuidedTour(true);
+    }
+  }, [authStatus, canUseApi]);
 
   useEffect(() => {
     if (!canUseApi) return;
@@ -952,9 +1026,20 @@ export default function HomePage(): JSX.Element {
                 setWebSources(sources);
               }
             );
-            const finalText = (replyPayload?.reply || streamedText || fallbackReply).trim();
+            if (!replyPayload.ok) {
+              if (replyPayload.status === 429) {
+                const limitMessage = replyPayload.message || "Token limit reached. Start a new session or contact an admin.";
+                setQuotaNotice(limitMessage);
+                setWebSources([]);
+                setMessageText(placeholderId, limitMessage, "complete");
+                return;
+              }
+              throw new Error(replyPayload.message);
+            }
+            setQuotaNotice(null);
+            const finalText = (streamedText || replyPayload.reply || fallbackReply).trim();
             if (!streamedSources.length) {
-              setWebSources(replyPayload?.sources ?? []);
+              setWebSources(replyPayload.sources);
             }
             setMessageText(placeholderId, finalText, "complete");
             void persistMessageToBackend(sessionId, "assistant", finalText, authToken)
@@ -1114,6 +1199,7 @@ export default function HomePage(): JSX.Element {
       return;
     }
     stopTypingAnimation();
+    setQuotaNotice(null);
     setInput("");
     const now = new Date();
     const optimisticId = crypto.randomUUID();
@@ -1741,6 +1827,33 @@ export default function HomePage(): JSX.Element {
             </div>
           ) : (
             <>
+              {quotaNotice && (
+                <div className="quota-banner" role="status">
+                  <div>
+                    <strong>Session limit</strong>
+                    <p>{quotaNotice}</p>
+                  </div>
+                  <div className="quota-banner__actions">
+                    <button
+                      type="button"
+                      className="quota-banner__button quota-banner__button--primary"
+                      onClick={() => {
+                        setQuotaNotice(null);
+                        handleNewSession();
+                      }}
+                    >
+                      Start new chat
+                    </button>
+                    <button
+                      type="button"
+                      className="quota-banner__button"
+                      onClick={() => setQuotaNotice(null)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
               <ConversationPanel
                 input={input}
                 onInputChange={setInput}
@@ -1793,6 +1906,17 @@ export default function HomePage(): JSX.Element {
           )}
         </section>
       </div>
+      {showGuidedTour && currentGuidedTourStep && (
+        <GuidedTour
+          step={currentGuidedTourStep}
+          stepIndex={guidedTourStepIndex}
+          totalSteps={guidedTourTotal}
+          onNext={handleGuidedTourNext}
+          onBack={handleGuidedTourBack}
+          onSkip={handleGuidedTourSkip}
+          isLast={guidedTourStepIndex >= guidedTourTotal - 1}
+        />
+      )}
     </div>
   );
 }
@@ -1936,6 +2060,17 @@ function normalizeSources(raw: unknown): ResponseSource[] {
     .filter((entry) => Boolean(entry.url));
 }
 
+function parseQuota(raw: unknown): QuotaInfo | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const payload = raw as Record<string, unknown>;
+  const limit = typeof payload.limit === "number" ? payload.limit : undefined;
+  const used = typeof payload.used === "number" ? payload.used : undefined;
+  if (limit === undefined && used === undefined) {
+    return undefined;
+  }
+  return { limit, used };
+}
+
 async function requestAssistantReply(
   prompt: string,
   history: ConversationMessage[],
@@ -1943,7 +2078,7 @@ async function requestAssistantReply(
   uploadContext?: string | null,
   uploadIds?: string[],
   useWeb?: boolean
-): Promise<{ reply: string; sources: ResponseSource[] } | null> {
+): Promise<RespondResult> {
   try {
     const body: {
       prompt: string;
@@ -1975,22 +2110,66 @@ async function requestAssistantReply(
       },
       body: JSON.stringify(body),
     });
+    const parseMessage = async (): Promise<string> => {
+      try {
+        const payload = (await response.json()) as { detail?: unknown; message?: unknown; quota?: unknown; reply?: unknown; sources?: unknown };
+        const quota = parseQuota(payload?.quota);
+        const detail = typeof payload?.detail === "string" ? payload.detail : typeof payload?.message === "string" ? payload.message : "";
+        if (response.ok) {
+          const reply = typeof payload?.reply === "string" ? payload.reply.trim() : "";
+          const sources = normalizeSources(payload?.sources);
+          if (reply) {
+            return JSON.stringify({ reply, sources, quota });
+          }
+          return JSON.stringify({ message: "Empty reply", quota });
+        }
+        return JSON.stringify({ message: detail || `Respond request failed (${response.status})`, quota });
+      } catch (error) {
+        return JSON.stringify({ message: error instanceof Error ? error.message : "Unexpected response" });
+      }
+    };
 
     if (!response.ok) {
-      throw new Error(`Respond request failed (${response.status})`);
+      const parsed = await parseMessage();
+      try {
+        const payload = JSON.parse(parsed) as { message?: string; quota?: QuotaInfo };  
+        return {
+          ok: false,
+          status: response.status,
+          message: payload.message ?? `Respond request failed (${response.status})`,
+          quota: payload.quota,
+        };
+      } catch {
+        return { ok: false, status: response.status, message: `Respond request failed (${response.status})` };
+      }
     }
 
-    const data = (await response.json()) as { reply?: unknown; sources?: unknown };
-    const reply = typeof data?.reply === "string" ? data.reply.trim() : "";
-    const sources = normalizeSources(data?.sources);
-    if (reply) {
-      return { reply, sources };
+    const parsed = await parseMessage();
+    try {
+      const payload = JSON.parse(parsed) as { reply?: string; sources?: ResponseSource[]; quota?: QuotaInfo; message?: string };
+      const reply = typeof payload.reply === "string" ? payload.reply.trim() : "";
+      const sources = Array.isArray(payload.sources) ? payload.sources : [];
+      if (reply) {
+        return { ok: true, reply, sources, quota: payload.quota };
+      }
+      return {
+        ok: false,
+        status: 204,
+        message: payload.message ?? "Assistant did not respond.",
+        quota: payload.quota,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 500,
+        message: error instanceof Error ? error.message : "Failed to parse response",
+      };
     }
   } catch (error) {
     loggerWarn("respond", error);
   }
 
-  return null;
+  return { ok: false, status: 500, message: "Assistant unavailable" };
 }
 
 type StreamEvent = {
@@ -2027,7 +2206,7 @@ async function requestAssistantReplyStream(
   authToken: string | null | undefined,
   onToken: (chunk: string, fullText: string) => void,
   onSources: (sources: ResponseSource[]) => void
-): Promise<{ reply: string; sources: ResponseSource[] } | null> {
+): Promise<RespondResult> {
   const body: {
     prompt: string;
     context: { role: string; text: string }[];
@@ -2060,8 +2239,25 @@ async function requestAssistantReplyStream(
     body: JSON.stringify(body),
   });
 
-  if (!response.ok || !response.body) {
-    throw new Error(`Stream request failed (${response.status})`);
+  if (!response.ok) {
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch (error) {
+      loggerWarn("respond-stream", error);
+    }
+    const quota = parseQuota(payload?.quota);
+    const detail = typeof payload?.detail === "string" ? payload.detail : typeof payload?.message === "string" ? payload.message : "";
+    return {
+      ok: false,
+      status: response.status,
+      message: detail || `Stream request failed (${response.status})`,
+      quota,
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 500, message: "Stream body missing" };
   }
 
   const reader = response.body.getReader();
@@ -2069,6 +2265,7 @@ async function requestAssistantReplyStream(
   let buffer = "";
   let reply = "";
   let sources: ResponseSource[] = [];
+  let quota: QuotaInfo | undefined;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -2086,7 +2283,7 @@ async function requestAssistantReplyStream(
       if (!parsed) continue;
       if (parsed.data.trim() === "[DONE]") {
         await reader.cancel();
-        return { reply: reply.trim(), sources };
+        return { ok: true, reply: reply.trim(), sources, quota };
       }
       if (parsed.event === "sources") {
         try {
@@ -2098,12 +2295,25 @@ async function requestAssistantReplyStream(
         }
         continue;
       }
+      if (parsed.event === "quota") {
+        try {
+          const payload = JSON.parse(parsed.data);
+          quota = parseQuota(payload);
+        } catch (error) {
+          loggerWarn("respond-quota", error);
+        }
+        continue;
+      }
       reply += parsed.data;
       onToken(parsed.data, reply);
     }
   }
 
-  return reply ? { reply: reply.trim(), sources } : null;
+  const finalReply = reply.trim();
+  if (finalReply) {
+    return { ok: true, reply: finalReply, sources, quota };
+  }
+  return { ok: false, status: 204, message: "Assistant did not respond.", quota };
 }
 
 function generateAssistantReply(
@@ -2282,62 +2492,34 @@ async function appendMessageToBackend(
     if (!response.ok) {
       throw new Error(`Append message failed (${response.status})`);
     }
-    const data = (await response.json()) as ApiSessionResponse;
-    return toLocalSession(data);
-  } catch (error) {
-    loggerWarn("session-message", error);
-    return null;
-  }
-}
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch (error) {
+      if (!response.ok) {
+        return { ok: false, status: response.status, message: `Respond request failed (${response.status})` };
+      }
+    }
 
-async function persistMessageToBackend(
-  sessionId: string,
-  role: "assistant" | "user",
-  text: string,
-  authToken?: string | null
-): Promise<Session | null> {
-  if (!sessionId || !text.trim()) return null;
-  return appendMessageToBackend(sessionId, role, text, authToken);
-}
+    const quota = parseQuota(payload?.quota);
 
-async function createSessionWithWelcome(
-  authToken?: string | null,
-  title?: string,
-  welcomeMessage?: string
-): Promise<Session | null> {
-  const created = await createSessionOnBackend(authToken, title);
-  if (!created) return null;
-  const greeting = welcomeMessage ?? buildVoiceGreeting("there");
-  const hydrated = await appendMessageToBackend(created.id, "assistant", greeting, authToken);
-  return hydrated ?? created;
-}
+    if (!response.ok) {
+      const detail = typeof payload?.detail === "string" ? payload?.detail : typeof payload?.message === "string" ? payload?.message : "";
+      return {
+        ok: false,
+        status: response.status,
+        message: detail || `Respond request failed (${response.status})`,
+        quota,
+      };
+    }
 
-function toLocalSession(api: ApiSessionResponse): Session {
-  const createdAt = toIsoString(api.created_at);
-  return {
-    id: api.id,
-    title: api.title?.trim() || buildDefaultSessionTitle(createdAt),
-    createdAt,
-    messages: (api.messages ?? []).map(toLocalMessage),
-    suggestions: starterSuggestions,
-    uploads: (api.uploads ?? []).map(toLocalUpload),
-  };
-}
-
-function toLocalMessage(api: ApiMessageResponse): ConversationMessage {
-  const createdAt = toIsoString(api.created_at);
-  return {
-    id: api.id ?? crypto.randomUUID(),
-    role: api.role === "assistant" ? "assistant" : "user",
-    text: api.text ?? "",
-    timestamp: formatTimestamp(new Date(createdAt)),
-    status: "complete",
-  };
-}
-
-function toIsoString(value?: string | null): string {
-  if (value) {
-    return value;
+    const reply = typeof payload?.reply === "string" ? payload.reply.trim() : "";
+    const sources = normalizeSources(payload?.sources);
+    if (reply) {
+      return { ok: true, reply, sources, quota };
+    }
+    const fallbackMessage = typeof payload?.message === "string" ? payload.message : "Assistant did not respond.";
+    return { ok: false, status: 204, message: fallbackMessage, quota };
   }
   return new Date().toISOString();
 }

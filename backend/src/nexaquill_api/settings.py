@@ -85,6 +85,12 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
+    # Admin console
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "pass"
+    ADMIN_TOKEN_TTL_SECONDS: int = 60 * 60 * 4
+    VOICE_SESSION_TOKEN_COST: int = 600
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

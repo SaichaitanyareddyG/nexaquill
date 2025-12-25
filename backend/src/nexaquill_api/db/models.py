@@ -23,6 +23,12 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(120))
     password_hash: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    chat_tokens_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=10000, server_default="10000")
+    chat_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    voice_tokens_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=10000, server_default="10000")
+    voice_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    tokens_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sessions: Mapped[list[ChatSession]] = relationship("ChatSession", back_populates="user")
 
