@@ -64,6 +64,16 @@ def get_user_by_id(db: Session, *, user_id: uuid.UUID) -> User | None:
     return db.scalars(stmt).first()
 
 
+def list_users(db: Session, *, limit: int = 200, offset: int = 0) -> list[User]:
+    stmt = (
+        select(User)
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(db.scalars(stmt))
+
+
 def create_user_with_password(
     db: Session,
     *,
@@ -83,6 +93,62 @@ def create_user_with_password(
         password_hash=password_hash,
     )
     db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_user_admin_fields(
+    db: Session,
+    user: User,
+    *,
+    display_name: str | None = None,
+    is_admin: bool | None = None,
+    chat_tokens_limit: int | None = None,
+    voice_tokens_limit: int | None = None,
+    reset_chat_tokens: bool = False,
+    reset_voice_tokens: bool = False,
+) -> User:
+    tokens_reset_at: datetime | None = None
+    if display_name is not None:
+        cleaned = display_name.strip()
+        user.display_name = cleaned or None
+    if is_admin is not None:
+        user.is_admin = is_admin
+    if chat_tokens_limit is not None:
+        user.chat_tokens_limit = chat_tokens_limit
+        if user.chat_tokens_used > user.chat_tokens_limit:
+            user.chat_tokens_used = user.chat_tokens_limit
+    if voice_tokens_limit is not None:
+        user.voice_tokens_limit = voice_tokens_limit
+        if user.voice_tokens_used > user.voice_tokens_limit:
+            user.voice_tokens_used = user.voice_tokens_limit
+    if reset_chat_tokens:
+        user.chat_tokens_used = 0
+        tokens_reset_at = datetime.now(tz=timezone.utc)
+    if reset_voice_tokens:
+        user.voice_tokens_used = 0
+        tokens_reset_at = datetime.now(tz=timezone.utc)
+    if tokens_reset_at:
+        user.tokens_reset_at = tokens_reset_at
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def add_chat_token_usage(db: Session, user: User, *, amount: int) -> User:
+    if amount <= 0:
+        return user
+    user.chat_tokens_used = min(user.chat_tokens_limit, user.chat_tokens_used + amount)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def add_voice_token_usage(db: Session, user: User, *, amount: int) -> User:
+    if amount <= 0:
+        return user
+    user.voice_tokens_used = min(user.voice_tokens_limit, user.voice_tokens_used + amount)
     db.commit()
     db.refresh(user)
     return user

@@ -227,3 +227,41 @@ x-nexa-admin-secret: <secret>
 Call it with curl or use `scripts/flush-logs.sh`.
 
 Logs are written to `backend/logs/nexaquill.log`.
+
+## Admin console & quotas
+
+The backend now exposes an admin console for managing users, reviewing logs, and enforcing usage quotas. Configure these environment variables in `backend/.env`:
+
+```bash
+# Admin login
+ADMIN_USERNAME="admin"
+ADMIN_PASSWORD="pass"
+ADMIN_TOKEN_TTL_SECONDS=14400
+VOICE_SESSION_TOKEN_COST=600
+
+# Shared secret used when the legacy header is preferred
+NEXA_SERVICE_SECRET="replace-me"
+```
+
+Change the defaults before any shared deployment. The login workflow is:
+
+1. `POST /admin/login` with the admin username/password to receive a JWT (`access_token`) and expiry (`expires_in`).
+2. Include `Authorization: Bearer <token>` on subsequent admin requests. The legacy header `x-nexa-admin-secret` remains accepted for compatibility.
+3. Use the responses to drive the frontend admin dashboard (`/admin`), which consumes:
+  - `GET /admin/users` to list users with quota metadata and admin flags.
+  - `PATCH /admin/users/{id}` to toggle admin access, adjust per-user token limits, or reset usage counters.
+  - `GET /admin/logs` and `GET /admin/logs?cursor=<offset>` for incremental log downloads.
+  - `WS /admin/logs/ws?token=<access_token>` for live log streaming.
+  - `POST /admin/logs/flush` to clear the log file.
+
+### Usage quotas
+
+Each user row now tracks token budgets:
+
+- `chat_tokens_limit` / `chat_tokens_used`
+- `voice_tokens_limit` / `voice_tokens_used`
+- `tokens_reset_at` timestamp (optional reminder for when you last reset counters)
+
+When the assistant handles a request, `quota_service` estimates token consumption and rejects the call with `429` if the limit would be exceeded. The response body includes a `quota` payload, and the streaming endpoint emits `event: quota` updates over SSE. The frontend converts these signals into in-product banners so users understand when to start a new session or contact an administrator. Use the admin dashboard reset switches to zero-out usage once you raise a customer’s limits.
+
+Realtime voice sessions use `VOICE_SESSION_TOKEN_COST` tokens each time the SDP exchange succeeds. Adjust the value if your deployment needs a different allowance.

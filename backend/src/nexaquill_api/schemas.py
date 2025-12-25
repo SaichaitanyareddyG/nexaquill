@@ -106,6 +106,12 @@ class UserRead(BaseModel):
     email: str
     display_name: str | None = None
     created_at: datetime | None = None
+    is_admin: bool = False
+    chat_tokens_limit: int | None = None
+    chat_tokens_used: int | None = None
+    voice_tokens_limit: int | None = None
+    voice_tokens_used: int | None = None
+    tokens_reset_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -135,3 +141,43 @@ class AuthForgotPasswordRequest(BaseModel):
 class AuthResetPasswordRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=512)
     password: str = Field(..., min_length=8, max_length=256)
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class AdminLoginResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+
+
+class AdminUserSummary(BaseModel):
+    id: UUID
+    email: str
+    display_name: str | None = None
+    is_admin: bool
+    chat_tokens_limit: int
+    chat_tokens_used: int
+    voice_tokens_limit: int
+    voice_tokens_used: int
+    tokens_reset_at: datetime | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AdminUserUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+    is_admin: bool | None = None
+    chat_tokens_limit: int | None = Field(default=None, ge=0)
+    voice_tokens_limit: int | None = Field(default=None, ge=0)
+    reset_chat_tokens: bool | None = False
+    reset_voice_tokens: bool | None = False
+
+
+class AdminLogSnapshot(BaseModel):
+    lines: list[str] = Field(default_factory=list)
+    cursor: int = 0

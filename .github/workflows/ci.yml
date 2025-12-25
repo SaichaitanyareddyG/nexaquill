@@ -1,0 +1,171 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/nexaquill
+  PYTHONPATH: ${{ github.workspace }}/backend/src
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  verify:
+    name: Verify Backend and Frontend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ankane/pgvector:pg16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: nexaquill
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nexaquill"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend dependencies
+        run: pip install .[dev]
+        working-directory: backend
+
+      - name: Wait for database
+        run: |
+          for i in {1..20}; do
+            pg_isready --host=localhost --port=5432 --username=postgres --dbname=nexaquill && break
+            sleep 2
+          done
+        env:
+          PGPASSWORD: postgres
+
+      - name: Apply migrations
+        run: alembic upgrade head
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Backend test suite
+        run: pytest --maxfail=1 --disable-warnings -q
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Health check smoke test
+        run: |
+          python -m uvicorn nexaquill_api.app:app --host 127.0.0.1 --port 8000 &
+          API_PID=$!
+          for i in {1..12}; do
+            sleep 2
+            if curl -fsS http://127.0.0.1:8000/healthz; then
+              STATUS=0
+              break
+            fi
+          done
+          kill $API_PID || true
+          exit ${STATUS:-1}
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
+
+      - name: Frontend lint
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Frontend build
+        run: npm run build
+        working-directory: frontend
+
+  deploy:
+    name: Deploy to Production
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    env:
+      AZURE_CDN_PROFILE: ${{ secrets.AZURE_CDN_PROFILE }}
+      AZURE_CDN_ENDPOINT: ${{ secrets.AZURE_CDN_ENDPOINT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy API Container App
+        run: |
+          az containerapp update \
+            --name ${{ secrets.AZURE_API_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ secrets.AZURE_BACKEND_IMAGE }} \
+            --yaml scripts/azure/containerapps-api.yaml
+
+      - name: Deploy Worker Container App
+        run: |
+          az containerapp update \
+            --name ${{ secrets.AZURE_WORKER_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --yaml scripts/azure/containerapps-worker.yaml
+
+      - name: Purge CDN (optional)
+        if: ${{ env.AZURE_CDN_PROFILE != '' && env.AZURE_CDN_ENDPOINT != '' }}
+        run: |
+          az cdn endpoint purge \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --profile-name ${{ env.AZURE_CDN_PROFILE }} \
+            --name ${{ env.AZURE_CDN_ENDPOINT }} \
+            --content-paths "/*"
+
+  automerge:
+    name: Enable Auto Merge
+    needs: verify
+    if: github.event_name == 'pull_request' && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Enable PR auto-merge
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          pull-request-number: ${{ github.event.pull_request.number }}
+          merge-method: squash

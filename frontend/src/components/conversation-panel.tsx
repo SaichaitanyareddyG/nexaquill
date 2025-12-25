@@ -5,17 +5,11 @@ import type { JSX, HTMLAttributes } from "react";
 import AddCommentOutlinedIcon from "@mui/icons-material/AddCommentOutlined";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import FileDownloadOutlinedIcon from "@mui/icons-material/FileDownloadOutlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import PictureAsPdfOutlinedIcon from "@mui/icons-material/PictureAsPdfOutlined";
 import ShareOutlinedIcon from "@mui/icons-material/ShareOutlined";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
-import IconButton from "@mui/material/IconButton";
-import ListItemIcon from "@mui/material/ListItemIcon";
-import ListItemText from "@mui/material/ListItemText";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import { useTheme } from "@mui/material/styles";
@@ -253,8 +247,6 @@ export function ConversationPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [mobileActionsAnchor, setMobileActionsAnchor] = useState<null | HTMLElement>(null);
-  const mobileActionsOpen = Boolean(mobileActionsAnchor);
   const theme = useTheme();
   const isSmallScreen = useMediaQuery(theme.breakpoints.down("md"));
   const assistantStreaming = useMemo(
@@ -267,30 +259,25 @@ export function ConversationPanel({
       ? "speaking"
       : "idle";
 
-  const handleOpenMobileActions = (event: React.MouseEvent<HTMLElement>): void => {
-    setMobileActionsAnchor(event.currentTarget);
-  };
+  const handleMobileActionChange = (event: React.ChangeEvent<HTMLSelectElement>): void => {
+    const { value } = event.target;
+    if (!value) return;
 
-  const handleCloseMobileActions = (): void => {
-    setMobileActionsAnchor(null);
-  };
-
-  const handleMobileExport = (format: "md" | "pdf"): void => {
-    void onExport(format);
-    handleCloseMobileActions();
-  };
-
-  const handleMobileDownload = (): void => {
-    void onDownloadSession();
-    handleCloseMobileActions();
-  };
-
-  const handleMobileShare = (): void => {
-    if (!onShareSession) {
-      return;
+    if (value === "export:pdf") {
+      if (!exportBusy) {
+        void onExport("pdf");
+      }
+    } else if (value === "export:md") {
+      if (!exportBusy) {
+        void onExport("md");
+      }
+    } else if (value === "download:json") {
+      void onDownloadSession();
+    } else if (value === "share:link" && onShareSession) {
+      void onShareSession();
     }
-    void onShareSession();
-    handleCloseMobileActions();
+
+    event.target.value = "";
   };
 
   const MicIcon = ({ active }: { active: boolean }): JSX.Element => (
@@ -429,53 +416,26 @@ export function ConversationPanel({
             </Stack>
           )}
           {isSmallScreen && (
-            <Box className="panel-head__actions-menu">
-              <IconButton
+            <Box className="panel-head__actions-select-wrapper">
+              <select
+                id="panel-head-actions-select"
+                className="panel-head__actions-select"
+                defaultValue=""
                 aria-label="Conversation actions"
-                aria-controls={mobileActionsOpen ? "panel-head-actions-menu" : undefined}
-                aria-expanded={mobileActionsOpen ? "true" : undefined}
-                aria-haspopup="true"
-                className="panel-head__actions-trigger"
-                onClick={handleOpenMobileActions}
-                size="small"
+                onChange={handleMobileActionChange}
               >
-                <MoreVertIcon />
-              </IconButton>
-              <Menu
-                anchorEl={mobileActionsAnchor}
-                id="panel-head-actions-menu"
-                open={mobileActionsOpen}
-                onClose={handleCloseMobileActions}
-                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-                transformOrigin={{ vertical: "top", horizontal: "right" }}
-              >
-                <MenuItem disabled={exportBusy} onClick={() => handleMobileExport("pdf")}>
-                  <ListItemIcon>
-                    <PictureAsPdfOutlinedIcon fontSize="small" />
-                  </ListItemIcon>
-                  <ListItemText primary={exportBusy ? "Exporting…" : "Export PDF"} />
-                </MenuItem>
-                <MenuItem disabled={exportBusy} onClick={() => handleMobileExport("md")}>
-                  <ListItemIcon>
-                    <DescriptionOutlinedIcon fontSize="small" />
-                  </ListItemIcon>
-                  <ListItemText primary={exportBusy ? "Exporting…" : "Export MD"} />
-                </MenuItem>
-                <MenuItem onClick={handleMobileDownload}>
-                  <ListItemIcon>
-                    <FileDownloadOutlinedIcon fontSize="small" />
-                  </ListItemIcon>
-                  <ListItemText primary="Download JSON" />
-                </MenuItem>
-                {onShareSession && (
-                  <MenuItem onClick={handleMobileShare}>
-                    <ListItemIcon>
-                      <ShareOutlinedIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText primary={shareLabel ?? "Share link"} />
-                  </MenuItem>
-                )}
-              </Menu>
+                <option value="">Quick actions…</option>
+                <option value="export:pdf" disabled={exportBusy}>
+                  {exportBusy ? "Exporting…" : "Export PDF"}
+                </option>
+                <option value="export:md" disabled={exportBusy}>
+                  {exportBusy ? "Exporting…" : "Export Markdown"}
+                </option>
+                <option value="download:json">Download JSON</option>
+                {onShareSession ? (
+                  <option value="share:link">{shareLabel ?? "Share link"}</option>
+                ) : null}
+              </select>
             </Box>
           )}
           <Button

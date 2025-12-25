@@ -89,6 +89,15 @@ The frontend only needs the backend URL. All Azure keys live in `backend/.env`. 
 - **Session deletion** removes chats and associated uploads.
 - **Share links** for read-only session views.
 - **Skeleton loading** while sessions hydrate.
+- **Guided tour** introduces key workflows the first time a user signs in.
+
+## Admin dashboard & quotas
+
+- Visit `/admin` to open the admin console. Sign in with the credentials defined by `ADMIN_USERNAME` / `ADMIN_PASSWORD` in the backend.
+- The dashboard lets you search users, toggle `is_admin`, adjust chat/voice token limits, and reset usage counters inline.
+- A live log viewer can stream from `WS /admin/logs/ws` or fall back to polling `GET /admin/logs` if websockets are blocked.
+- Quota warnings from the backend surface as banners inside the main chat view; users see the remaining budget or next steps whenever a `429` response or SSE quota event arrives.
+- Clearing or creating a new session automatically dismisses old quota notices so conversations begin with a clean slate.
 
 ## Key Files
 
