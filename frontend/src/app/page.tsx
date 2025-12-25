@@ -2492,34 +2492,10 @@ async function appendMessageToBackend(
     if (!response.ok) {
       throw new Error(`Append message failed (${response.status})`);
     }
-    let payload: Record<string, unknown> | null = null;
-    try {
-      payload = (await response.json()) as Record<string, unknown>;
-    } catch (error) {
-      if (!response.ok) {
-        return { ok: false, status: response.status, message: `Respond request failed (${response.status})` };
-      }
-    }
-
-    const quota = parseQuota(payload?.quota);
-
-    if (!response.ok) {
-      const detail = typeof payload?.detail === "string" ? payload?.detail : typeof payload?.message === "string" ? payload?.message : "";
-      return {
-        ok: false,
-        status: response.status,
-        message: detail || `Respond request failed (${response.status})`,
-        quota,
-      };
-    }
-
-    const reply = typeof payload?.reply === "string" ? payload.reply.trim() : "";
-    const sources = normalizeSources(payload?.sources);
-    if (reply) {
-      return { ok: true, reply, sources, quota };
-    }
-    const fallbackMessage = typeof payload?.message === "string" ? payload.message : "Assistant did not respond.";
-    return { ok: false, status: 204, message: fallbackMessage, quota };
+    const data = (await response.json()) as ApiSessionResponse;
+    return toLocalSession(data);
+  } catch (error) {
+    loggerWarn("session-append", error);
+    return null;
   }
-  return new Date().toISOString();
 }
