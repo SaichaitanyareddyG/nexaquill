@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # NexaQuill
 
 NexaQuill is a multimodal assistant that blends chat, voice, and document insights into a single session. It runs a
@@ -247,3 +248,7 @@ az storage cors add \
 - `scripts/` – dev helpers.
 
 See `backend/README.md` and `frontend/README.md` for details.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
