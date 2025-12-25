@@ -2499,3 +2499,19 @@ async function appendMessageToBackend(
     return null;
   }
 }
+
+async function createSessionWithWelcome(
+  authToken: string | null | undefined,
+  title: string | undefined,
+  welcomeMessage: string | undefined
+): Promise<Session | null> {
+  const session = await createSessionOnBackend(authToken, title);
+  if (!session) {
+    return null;
+  }
+  if (!welcomeMessage || !welcomeMessage.trim()) {
+    return session;
+  }
+  const updated = await appendMessageToBackend(session.id, "assistant", welcomeMessage, authToken);
+  return updated ?? session;
+}
