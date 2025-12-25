@@ -10,9 +10,11 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.orm import Session
 
 from ..agent import AgentPipeline, AgentRequest
 from ..db.models import User
+from ..db.session import get_db
 from ..settings import Settings, get_settings
 from ..services.auth_service import get_current_user
 from ..services.http_service import request_with_retries
@@ -32,6 +34,7 @@ from ..services.respond_service import (
     openai_suggestions_ready,
     log_http_error,
 )
+from ..services.quota_service import ensure_chat_quota_available, estimate_chat_usage, record_chat_usage
 
 logger = logging.getLogger("nexaquill.respond")
 router = APIRouter(prefix="/nexa", tags=["respond"])
@@ -191,6 +194,7 @@ async def respond(
     request: Request,
     settings: Settings = Depends(get_settings),
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> JSONResponse:
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
@@ -210,6 +214,8 @@ async def respond(
 
     if not prompt:
         return JSONResponse({"reply": "Let me know what you’d like to focus on and I’ll jump in."})
+
+    ensure_chat_quota_available(user)
 
     url_context, url_sources = await ground_with_urls(prompt)
 
@@ -257,7 +263,19 @@ async def respond(
             )
             reply = extract_output_text(resp.json())
             if reply:
-                return JSONResponse({"reply": reply.strip(), "sources": url_sources + web_sources + file_sources})
+                reply = reply.strip()
+                tokens_used = estimate_chat_usage(prompt, reply)
+                updated_user = record_chat_usage(db, user, tokens=tokens_used)
+                return JSONResponse(
+                    {
+                        "reply": reply,
+                        "sources": url_sources + web_sources + file_sources,
+                        "quota": {
+                            "limit": updated_user.chat_tokens_limit,
+                            "used": updated_user.chat_tokens_used,
+                        },
+                    }
+                )
         except httpx.HTTPError as exc:
             log_http_error(exc, "respond")
         except Exception as exc:  # pragma: no cover
@@ -286,7 +304,18 @@ async def respond(
         if reply:
             cleaned = _sanitize_markdown(reply.strip())
             _log_markdown_debug("respond.reply", cleaned)
-            return JSONResponse({"reply": cleaned, "sources": url_sources + web_sources + file_sources})
+            tokens_used = estimate_chat_usage(prompt, cleaned)
+            updated_user = record_chat_usage(db, user, tokens=tokens_used)
+            return JSONResponse(
+                {
+                    "reply": cleaned,
+                    "sources": url_sources + web_sources + file_sources,
+                    "quota": {
+                        "limit": updated_user.chat_tokens_limit,
+                        "used": updated_user.chat_tokens_used,
+                    },
+                }
+            )
     except httpx.HTTPError as exc:
         log_http_error(exc, "respond")
     except Exception as exc:  # pragma: no cover
@@ -302,6 +331,7 @@ async def respond_stream(
     request: Request,
     settings: Settings = Depends(get_settings),
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
@@ -320,6 +350,8 @@ async def respond_stream(
             yield "data:[DONE]\n\n"
 
         return StreamingResponse(empty(), media_type="text/event-stream")
+
+    ensure_chat_quota_available(user)
 
     url_context, url_sources = await ground_with_urls(prompt)
     web_sources: list[dict[str, str]] = []
@@ -390,7 +422,12 @@ async def respond_stream(
                                 raw_reply.append(content)
                                 yield _format_sse_data(_sanitize_markdown(content))
                 yield "data:[DONE]\n\n"
-                _log_markdown_debug("respond.stream.azure", "".join(raw_reply))
+                full_reply = "".join(raw_reply)
+                cleaned = _sanitize_markdown(full_reply)
+                _log_markdown_debug("respond.stream.azure", cleaned)
+                tokens_used = estimate_chat_usage(prompt, cleaned)
+                updated_user = record_chat_usage(db, user, tokens=tokens_used)
+                yield f"event: quota\ndata:{json.dumps({'limit': updated_user.chat_tokens_limit, 'used': updated_user.chat_tokens_used})}\n\n"
                 return
             except Exception as exc:  # pragma: no cover
                 logger.warning("Streaming fallback: %s", exc)
@@ -418,6 +455,10 @@ async def respond_stream(
                 for chunk in _chunk_text(cleaned, 120):
                     yield _format_sse_data(chunk)
                     await asyncio.sleep(0.01)
+                if cleaned:
+                    tokens_used = estimate_chat_usage(prompt, cleaned)
+                    updated_user = record_chat_usage(db, user, tokens=tokens_used)
+                    yield f"event: quota\ndata:{json.dumps({'limit': updated_user.chat_tokens_limit, 'used': updated_user.chat_tokens_used})}\n\n"
             except Exception:
                 pass
         yield "data:[DONE]\n\n"
