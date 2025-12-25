@@ -2359,6 +2359,7 @@ type ApiSessionResponse = {
   updated_at?: string | null;
   messages?: ApiMessageResponse[];
   uploads?: ApiUploadResponse[];
+  suggestions?: string[] | null;
 };
 
 type ApiMessageResponse = {
@@ -2393,6 +2394,37 @@ function normalizeUploadStatus(value?: string | null): UploadRecord["status"] {
     default:
       return "processing";
   }
+}
+
+function toLocalSession(session: ApiSessionResponse): Session {
+  const createdAt = session.created_at ?? new Date().toISOString();
+  const messages: ConversationMessage[] = Array.isArray(session.messages)
+    ? session.messages
+        .filter((message): message is ApiMessageResponse => Boolean(message?.role && message?.text))
+        .map((message) => {
+          const timestampSource = message.created_at ?? createdAt;
+          const timestampDate = new Date(timestampSource);
+          return {
+            id: message.id ?? crypto.randomUUID(),
+            role: message.role === "assistant" ? "assistant" : "user",
+            text: message.text ?? "",
+            timestamp: Number.isNaN(timestampDate.getTime())
+              ? formatTimestamp(new Date())
+              : formatTimestamp(timestampDate),
+            status: "complete",
+          };
+        })
+    : [];
+  const uploads = Array.isArray(session.uploads) ? session.uploads.map(toLocalUpload) : [];
+  const title = session.title?.trim() || buildDefaultSessionTitle(createdAt ?? undefined);
+  return {
+    id: session.id,
+    title,
+    createdAt,
+    messages,
+    suggestions: session.suggestions && session.suggestions.length ? session.suggestions : [],
+    uploads,
+  };
 }
 
 function toLocalUpload(upload: ApiUploadResponse): UploadRecord {
@@ -2492,34 +2524,35 @@ async function appendMessageToBackend(
     if (!response.ok) {
       throw new Error(`Append message failed (${response.status})`);
     }
-    let payload: Record<string, unknown> | null = null;
-    try {
-      payload = (await response.json()) as Record<string, unknown>;
-    } catch (error) {
-      if (!response.ok) {
-        return { ok: false, status: response.status, message: `Respond request failed (${response.status})` };
-      }
-    }
-
-    const quota = parseQuota(payload?.quota);
-
-    if (!response.ok) {
-      const detail = typeof payload?.detail === "string" ? payload?.detail : typeof payload?.message === "string" ? payload?.message : "";
-      return {
-        ok: false,
-        status: response.status,
-        message: detail || `Respond request failed (${response.status})`,
-        quota,
-      };
-    }
-
-    const reply = typeof payload?.reply === "string" ? payload.reply.trim() : "";
-    const sources = normalizeSources(payload?.sources);
-    if (reply) {
-      return { ok: true, reply, sources, quota };
-    }
-    const fallbackMessage = typeof payload?.message === "string" ? payload.message : "Assistant did not respond.";
-    return { ok: false, status: 204, message: fallbackMessage, quota };
+    const data = (await response.json()) as ApiSessionResponse;
+    return toLocalSession(data);
+  } catch (error) {
+    loggerWarn("session-append", error);
+    return null;
   }
-  return new Date().toISOString();
+}
+
+function persistMessageToBackend(
+  sessionId: string,
+  role: "assistant" | "user",
+  text: string,
+  authToken?: string | null
+): Promise<Session | null> {
+  return appendMessageToBackend(sessionId, role, text, authToken);
+}
+
+async function createSessionWithWelcome(
+  authToken: string | null | undefined,
+  title: string | undefined,
+  welcomeMessage: string | undefined
+): Promise<Session | null> {
+  const session = await createSessionOnBackend(authToken, title);
+  if (!session) {
+    return null;
+  }
+  if (!welcomeMessage || !welcomeMessage.trim()) {
+    return session;
+  }
+  const updated = await appendMessageToBackend(session.id, "assistant", welcomeMessage, authToken);
+  return updated ?? session;
 }
