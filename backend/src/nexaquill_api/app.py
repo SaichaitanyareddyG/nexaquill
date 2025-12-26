@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +24,7 @@ from .routes import (
     session_routes,
     upload_routes,
 )
+from .services.admin_service import log_file_path
 from .services.queue_service import enqueue_upload_job
 from .services.upload_service import process_upload_async
 from .settings import Settings, get_settings
@@ -34,9 +34,8 @@ logger = logging.getLogger("nexaquill")
 
 def configure_logging(settings: Settings) -> None:
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
-    log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "nexaquill.log"
+    log_file = log_file_path()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     handlers = [logging.StreamHandler(), logging.FileHandler(log_file, encoding="utf-8")]
 

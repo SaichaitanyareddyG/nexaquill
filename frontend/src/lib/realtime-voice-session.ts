@@ -27,6 +27,8 @@ export class RealtimeVoiceSession {
   private authToken: string | null = null;
   private sessionToken: string | null = null;
   private dataChannel: RTCDataChannel | null = null;
+  private muted = false;
+  private pendingGreeting: string | null = null;
 
   constructor(options: { backendBase: string; authToken?: string | null; callbacks?: VoiceSessionCallbacks }) {
     this.backendBase = options.backendBase;
@@ -44,6 +46,9 @@ export class RealtimeVoiceSession {
     this.sessionToken = token;
 
     this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    this.localStream.getAudioTracks().forEach((track) => {
+      track.enabled = !this.muted;
+    });
     this.pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
@@ -88,6 +93,9 @@ export class RealtimeVoiceSession {
     this.dataChannel = this.pc.createDataChannel("oai-events");
     this.dataChannel.onopen = () => {
       this.sendSessionConfiguration();
+      if (this.pendingGreeting) {
+        this.sendGreeting(this.pendingGreeting);
+      }
     };
     this.dataChannel.onmessage = (event) => {
       this.handleEvent(event.data);
@@ -126,6 +134,8 @@ export class RealtimeVoiceSession {
     }
     this.localStream?.getTracks().forEach((track) => track.stop());
     this.localStream = null;
+    this.muted = false;
+    this.pendingGreeting = null;
     if (this.remoteAudioEl) {
       this.remoteAudioEl.pause();
       this.remoteAudioEl.srcObject = null;
@@ -133,6 +143,36 @@ export class RealtimeVoiceSession {
       this.remoteAudioEl = null;
     }
     this.callbacks.onStateChange?.("idle");
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach((track) => {
+        track.enabled = !muted;
+      });
+    }
+    this.sendSessionConfiguration();
+    if (muted) {
+      this.sendEvent({ type: "response.cancel" });
+    }
+  }
+
+  sendGreeting(message: string): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    const sent = this.sendEvent({
+      type: "response.create",
+      response: {
+        modalities: ["audio", "text"],
+        instructions: trimmed,
+      },
+    });
+    if (!sent) {
+      this.pendingGreeting = trimmed;
+    } else {
+      this.pendingGreeting = null;
+    }
   }
 
   private async fetchToken(name?: string): Promise<string> {
@@ -244,10 +284,6 @@ export class RealtimeVoiceSession {
   }
 
   private sendSessionConfiguration(): void {
-    const channel = this.dataChannel;
-    if (!channel || channel.readyState !== "open") {
-      return;
-    }
     const payload = {
       type: "session.update",
       session: {
@@ -258,7 +294,7 @@ export class RealtimeVoiceSession {
           threshold: 0.5,
           silence_duration_ms: 350,
           prefix_padding_ms: 200,
-          create_response: true,
+          create_response: !this.muted,
           interrupt_response: true,
         },
         modalities: ["audio", "text"],
@@ -266,6 +302,15 @@ export class RealtimeVoiceSession {
         max_response_output_tokens: 1200,
       },
     };
+    this.sendEvent(payload);
+  }
+
+  private sendEvent(payload: unknown): boolean {
+    const channel = this.dataChannel;
+    if (!channel || channel.readyState !== "open") {
+      return false;
+    }
     channel.send(JSON.stringify(payload));
+    return true;
   }
 }

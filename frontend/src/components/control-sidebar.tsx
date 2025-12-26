@@ -21,7 +21,9 @@ type ControlSidebarProps = {
   sessionTurns: number;
   tokenEstimate: number;
   isVoiceActive: boolean;
+  isVoiceMuted: boolean;
   onToggleVoice: () => void | Promise<void>;
+  onStopVoice?: () => void | Promise<void>;
   isLoading?: boolean;
 };
 
@@ -34,7 +36,9 @@ export function ControlSidebar({
   sessionTurns,
   tokenEstimate,
   isVoiceActive,
+  isVoiceMuted,
   onToggleVoice,
+  onStopVoice,
   isLoading = false,
 }: ControlSidebarProps): JSX.Element {
   const [draftTitle, setDraftTitle] = useState<string>("");
@@ -167,32 +171,45 @@ export function ControlSidebar({
       </div>
 
       <div className={`voice-card voice-card--sidebar ${isVoiceActive ? "voice-card--active" : ""}`}>
-        <VoiceAvatar active={isVoiceActive} />
+        <VoiceAvatar active={isVoiceActive} muted={isVoiceMuted} />
         <div className="voice-card__summary">
           <p className="voice-card__title">Voice mode</p>
           <span className={`voice-card__badge ${isVoiceActive ? "voice-card__badge--on" : ""}`}>
-            {isVoiceActive ? "Listening" : "Idle"}
+            {isVoiceActive ? (isVoiceMuted ? "Muted" : "Live") : "Idle"}
           </span>
         </div>
-        <button
-          type="button"
-          className={`btn ${isVoiceActive ? "btn--danger" : "btn--primary"}`}
-          onClick={() => {
-            void onToggleVoice();
-          }}
-        >
-          {isVoiceActive ? "Mute mic" : "Enable voice"}
-        </button>
+        <div className="voice-card__actions">
+          <button
+            type="button"
+            className={`btn ${isVoiceActive ? "btn--ghost" : "btn--primary"}`}
+            onClick={() => {
+              void onToggleVoice();
+            }}
+          >
+            {isVoiceActive ? (isVoiceMuted ? "Unmute mic" : "Mute mic") : "Enable voice"}
+          </button>
+          {isVoiceActive && onStopVoice && (
+            <button
+              type="button"
+              className="btn btn--danger"
+              onClick={() => {
+                void onStopVoice();
+              }}
+            >
+              End voice
+            </button>
+          )}
+        </div>
       </div>
     </aside>
   );
 }
 
-function VoiceAvatar({ active }: { active: boolean }): JSX.Element {
+function VoiceAvatar({ active, muted }: { active: boolean; muted: boolean }): JSX.Element {
   const [mode, setMode] = useState<DigitalAvatarMode>("idle");
 
   useEffect(() => {
-    if (!active) {
+    if (!active || muted) {
       setMode("idle");
       return;
     }
@@ -205,7 +222,7 @@ function VoiceAvatar({ active }: { active: boolean }): JSX.Element {
     return () => {
       window.clearInterval(interval);
     };
-  }, [active]);
+  }, [active, muted]);
 
   return (
     <div className="voice-avatar-container">

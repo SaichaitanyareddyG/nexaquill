@@ -155,6 +155,7 @@ export default function HomePage(): JSX.Element {
   const [input, setInput] = useState("");
   const [isDictating, setIsDictating] = useState(false);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [uploadStatuses, setUploadStatuses] = useState<AttachmentUploadStatus[]>([]);
   const [uploadCount, setUploadCount] = useState(0);
@@ -183,6 +184,9 @@ export default function HomePage(): JSX.Element {
   const recognitionRef = useRef<any>(null);
   const dictationShouldResumeRef = useRef(false);
   const voiceSessionRef = useRef<RealtimeVoiceSession | null>(null);
+  const voiceSilenceTimerRef = useRef<number | null>(null);
+  const voiceAutoStartRef = useRef(false);
+  const voiceGreetingSentRef = useRef(false);
   const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
   const uploadIdByClientIdRef = useRef<Map<string, string>>(new Map());
   const [voiceSessionState, setVoiceSessionState] = useState<VoiceSessionState>("idle");
@@ -234,20 +238,27 @@ export default function HomePage(): JSX.Element {
     const state = voiceSessionState;
     let title = "Listening for you";
     let caption = "Say anything anytime or hit mute.";
+    let mode: VoiceIndicatorOverride["mode"] = "listening";
     if (state === "connecting") {
       title = "Connecting voice channel…";
       caption = "Authenticating with Azure Realtime.";
     } else if (state === "speaking") {
       title = "Responding with voice";
       caption = "Hold on, Nexa is finishing the answer.";
+      mode = "speaking";
+    }
+    if (isVoiceMuted) {
+      title = "Mic muted";
+      caption = "Unmute to keep talking.";
+      mode = "idle";
     }
     return {
-      mode: state === "speaking" ? "speaking" : "listening",
+      mode,
       title,
       caption,
       isVisible: true,
     } as VoiceIndicatorOverride | null;
-  }, [voiceSessionState]);
+  }, [isVoiceMuted, voiceSessionState]);
 
   const updateActiveSession = useCallback(
     (updater: (session: Session) => Session) => {
@@ -683,7 +694,17 @@ export default function HomePage(): JSX.Element {
     }
   }, [authToken, voiceStreamingMessageId, updateActiveSession, activeSessionId, syncSessionFromRemote]);
 
+  const clearVoiceSilenceTimer = useCallback(() => {
+    if (voiceSilenceTimerRef.current) {
+      window.clearTimeout(voiceSilenceTimerRef.current);
+      voiceSilenceTimerRef.current = null;
+    }
+  }, []);
+
   const stopVoiceSession = useCallback(async () => {
+    clearVoiceSilenceTimer();
+    voiceGreetingSentRef.current = false;
+    setIsVoiceMuted(false);
     const session = voiceSessionRef.current;
     if (session) {
       try {
@@ -696,12 +717,20 @@ export default function HomePage(): JSX.Element {
     setIsVoiceActive(false);
     setVoiceSessionState("idle");
     finalizeVoiceMessage();
-  }, [finalizeVoiceMessage]);
+  }, [clearVoiceSilenceTimer, finalizeVoiceMessage]);
+
+  const scheduleVoiceSilenceTimeout = useCallback(() => {
+    clearVoiceSilenceTimer();
+    voiceSilenceTimerRef.current = window.setTimeout(() => {
+      void stopVoiceSession();
+    }, 2 * 60 * 1000);
+  }, [clearVoiceSilenceTimer, stopVoiceSession]);
 
   const appendVoiceUserTranscriptRealtime = useCallback(
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || !activeSessionId) return;
+      scheduleVoiceSilenceTimeout();
       addMessage({
         role: "user",
         text: trimmed,
@@ -712,7 +741,7 @@ export default function HomePage(): JSX.Element {
         .then(syncSessionFromRemote)
         .catch((error) => loggerWarn("persist-voice-user", error));
     },
-    [activeSessionId, addMessage, authToken, syncSessionFromRemote]
+    [activeSessionId, addMessage, authToken, scheduleVoiceSilenceTimeout, syncSessionFromRemote]
   );
 
   const handleVoiceSessionError = useCallback(
@@ -728,14 +757,12 @@ export default function HomePage(): JSX.Element {
     [addMessage]
   );
 
-  const handleVoiceSessionToggle = useCallback(async () => {
-    userTouchedSessionsRef.current = true;
+  const startVoiceSession = useCallback(async () => {
     if (!canUseApi) {
       void signIn("azure-ad");
       return;
     }
     if (isVoiceActive) {
-      await stopVoiceSession();
       return;
     }
 
@@ -756,10 +783,16 @@ export default function HomePage(): JSX.Element {
 
     voiceSessionRef.current = session;
     setVoiceSessionState("connecting");
+    setIsVoiceMuted(false);
 
     try {
       await session.start({ name: voiceParticipantName });
       setIsVoiceActive(true);
+      scheduleVoiceSilenceTimeout();
+      if (!voiceGreetingSentRef.current) {
+        session.sendGreeting(buildVoiceGreeting(welcomeName));
+        voiceGreetingSentRef.current = true;
+      }
     } catch (error) {
       handleVoiceSessionError(
         error instanceof Error
@@ -776,9 +809,47 @@ export default function HomePage(): JSX.Element {
     finalizeVoiceMessage,
     handleVoiceSessionError,
     isVoiceActive,
+    scheduleVoiceSilenceTimeout,
     stopVoiceSession,
     voiceParticipantName,
+    welcomeName,
   ]);
+
+  const toggleVoiceMute = useCallback(() => {
+    const session = voiceSessionRef.current;
+    if (!session) return;
+    const nextMuted = !isVoiceMuted;
+    session.setMuted(nextMuted);
+    setIsVoiceMuted(nextMuted);
+    if (!nextMuted) {
+      scheduleVoiceSilenceTimeout();
+    }
+  }, [isVoiceMuted, scheduleVoiceSilenceTimeout]);
+
+  const handleVoiceSessionToggle = useCallback(async () => {
+    userTouchedSessionsRef.current = true;
+    if (isVoiceActive) {
+      toggleVoiceMute();
+      return;
+    }
+    await startVoiceSession();
+  }, [isVoiceActive, startVoiceSession, toggleVoiceMute]);
+
+  const handleVoiceSessionStop = useCallback(async () => {
+    userTouchedSessionsRef.current = true;
+    await stopVoiceSession();
+  }, [stopVoiceSession]);
+
+  useEffect(() => {
+    if (voiceAutoStartRef.current || isVoiceActive) {
+      return;
+    }
+    if (!canUseApi || !systemStatus.realtime) {
+      return;
+    }
+    voiceAutoStartRef.current = true;
+    void startVoiceSession();
+  }, [canUseApi, isVoiceActive, startVoiceSession, systemStatus.realtime]);
 
   const stopTypingAnimation = useCallback(() => {
     typingTimers.current.forEach((timer) => window.clearTimeout(timer));
@@ -1899,7 +1970,9 @@ export default function HomePage(): JSX.Element {
                 sessionTurns={messages.length}
                 tokenEstimate={tokenEstimate}
                 isVoiceActive={isVoiceActive}
+                isVoiceMuted={isVoiceMuted}
                 onToggleVoice={handleVoiceSessionToggle}
+                onStopVoice={handleVoiceSessionStop}
                 isLoading={isHydratingSessions}
               />
             </>

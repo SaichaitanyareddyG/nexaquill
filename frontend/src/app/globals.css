@@ -582,6 +582,12 @@ body {
   color: #e2e8f0;
 }
 
+.admin-page--login {
+  min-height: calc(100vh - 120px);
+  justify-content: center;
+  align-items: center;
+}
+
 .admin-header {
   display: flex;
   justify-content: space-between;
@@ -598,7 +604,8 @@ body {
 }
 
 .admin-login {
-  max-width: 420px;
+  width: 100%;
+  max-width: 520px;
 }
 
 .admin-section {
@@ -619,6 +626,34 @@ body {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.admin-logs-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.admin-logs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.admin-logs-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-logs-panel__title {
+  font-size: 0.95rem;
+  margin: 0;
 }
 
 .admin-form {
@@ -693,6 +728,12 @@ body {
   font-size: 0.9rem;
   cursor: pointer;
   transition: all 0.18s ease;
+}
+
+.admin-button--compact {
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  border-radius: 10px;
 }
 
 .admin-button:hover {
@@ -1614,6 +1655,17 @@ body {
   flex-wrap: wrap;
 }
 
+.voice-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-card__actions .btn {
+  padding: 10px 18px;
+  font-size: 0.9rem;
+}
+
 .voice-card__title {
   margin: 0;
   font-weight: 600;
@@ -1635,6 +1687,18 @@ body {
   background: rgba(56, 248, 197, 0.2);
   color: #bbf7d0;
   border-color: rgba(56, 248, 197, 0.4);
+}
+
+@media (max-width: 768px) {
+  .voice-card__actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .voice-card__actions .btn {
+    width: 100%;
+  }
 }
 
 .voice-avatar-container {

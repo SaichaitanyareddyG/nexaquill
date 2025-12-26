@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from enum import Enum
 
 import asyncio
 import json
@@ -9,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
+import httpx
 from sqlalchemy.orm import Session
 
 from ..db import crud
@@ -31,6 +33,11 @@ from ..services.admin_service import (
 
 logger = logging.getLogger("nexaquill.admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class LogSource(str, Enum):
+    backend = "backend"
+    frontend = "frontend"
 
 
 async def _send_log_payload(websocket: WebSocket, payload: dict[str, Any]) -> None:
@@ -79,6 +86,41 @@ def _read_log_since(cursor: int | None) -> tuple[list[str], int]:
     except Exception as exc:  # pragma: no cover
         logger.error("Failed to read log delta: %s", exc)
         return [], 0
+
+
+async def _fetch_frontend_logs(limit: int, settings: Settings) -> list[str]:
+    host = settings.FRONTEND_KUDU_HOST.strip().rstrip("/")
+    user = settings.FRONTEND_KUDU_USER.strip()
+    password = settings.FRONTEND_KUDU_PASSWORD.strip()
+    if not host or not user or not password:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Frontend log source not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            index_resp = await client.get(
+                f"{host}/api/logs/docker",
+                auth=(user, password),
+            )
+            index_resp.raise_for_status()
+            payload = index_resp.json()
+            entries = payload.get("items") if isinstance(payload, dict) else payload
+            if not isinstance(entries, list) or not entries:
+                return []
+            latest = entries[-1]
+            href = latest.get("href") if isinstance(latest, dict) else None
+            if not href:
+                return []
+            tail_bytes = max(4096, int(settings.FRONTEND_LOG_TAIL_BYTES or 0))
+            headers = {"Range": f"bytes=-{tail_bytes}"}
+            file_resp = await client.get(href, auth=(user, password), headers=headers)
+            if file_resp.status_code not in (200, 206):
+                file_resp.raise_for_status()
+            text = file_resp.text
+            lines = text.splitlines()
+            return lines[-limit:] if limit else lines
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch frontend logs: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to fetch frontend logs") from exc
 
 
 @router.post("/login", response_model=AdminLoginResponse)
@@ -133,12 +175,18 @@ def update_user(
 
 
 @router.get("/logs", response_model=AdminLogSnapshot)
-def fetch_logs(
+async def fetch_logs(
     cursor: int | None = None,
     limit: int = 200,
+    source: LogSource = LogSource.backend,
+    settings: Settings = Depends(get_settings),
     _: dict[str, Any] = Depends(_admin_guard),
 ) -> AdminLogSnapshot:
     limit = max(10, min(limit, 500))
+    if source == LogSource.frontend:
+        lines = await _fetch_frontend_logs(limit, settings)
+        return AdminLogSnapshot(lines=lines, cursor=0)
+
     path = log_file_path()
     if not path.exists():
         return AdminLogSnapshot(lines=[], cursor=0)
@@ -155,9 +203,13 @@ def fetch_logs(
 @router.post("/logs/flush")
 async def flush_logs(
     request: Request,
+    source: LogSource = LogSource.backend,
     settings: Settings = Depends(get_settings),
 ) -> JSONResponse:
     require_admin(request, settings)
+    if source == LogSource.frontend:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Frontend logs cannot be flushed here")
+
     log_file = log_file_path()
     try:
         log_file.write_text("", encoding="utf-8")
@@ -172,19 +224,24 @@ async def flush_logs_legacy(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> JSONResponse:
-    return await flush_logs(request, settings)
+    return await flush_logs(request, LogSource.backend, settings)
 
 
 @router.websocket("/logs/ws")
 async def logs_websocket(
     websocket: WebSocket,
     token: str,
+    source: LogSource = LogSource.backend,
     settings: Settings = Depends(get_settings),
 ) -> None:
     try:
         decode_admin_token(token, settings)
     except HTTPException:
         await websocket.close(code=1008)
+        return
+
+    if source != LogSource.backend:
+        await websocket.close(code=1003)
         return
 
     await websocket.accept()
@@ -212,4 +269,3 @@ async def logs_websocket(
     except Exception as exc:  # pragma: no cover
         logger.error("Log websocket error: %s", exc)
         await websocket.close(code=1011)
-

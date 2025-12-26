@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "pass"
     ADMIN_TOKEN_TTL_SECONDS: int = 60 * 60 * 4
     VOICE_SESSION_TOKEN_COST: int = 600
+    FRONTEND_KUDU_HOST: str = ""
+    FRONTEND_KUDU_USER: str = ""
+    FRONTEND_KUDU_PASSWORD: str = ""
+    FRONTEND_LOG_TAIL_BYTES: int = 20000
 
 
 @lru_cache(maxsize=1)

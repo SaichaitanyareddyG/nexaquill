@@ -6,12 +6,19 @@ const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 const TOKEN_KEY = "nexa-admin-token";
 
 const POLL_OPTIONS = [
-  { label: "2s", value: 2 },
-  { label: "3s", value: 3 },
   { label: "5s", value: 5 },
   { label: "10s", value: 10 },
+  { label: "30s", value: 30 },
+  { label: "60s", value: 60 },
   { label: "Live", value: 0 },
 ];
+
+const LOG_SOURCES = [
+  { label: "Backend", value: "backend" },
+  { label: "Frontend", value: "frontend" },
+];
+
+type LogSource = "backend" | "frontend";
 
 type AdminUser = {
   id: string;
@@ -37,6 +44,8 @@ type AdminLogPayload = {
   reset?: boolean;
 };
 
+const FRONTEND_POLL_FALLBACK_SECONDS = 15;
+
 export default function AdminPage(): JSX.Element {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("pass");
@@ -54,13 +63,32 @@ export default function AdminPage(): JSX.Element {
     resetChat: false,
     resetVoice: false,
   });
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const [logCursor, setLogCursor] = useState(0);
-  const [pollInterval, setPollInterval] = useState(5);
+  const [logLines, setLogLines] = useState<Record<LogSource, string[]>>({
+    backend: [],
+    frontend: [],
+  });
+  const [logCursor, setLogCursor] = useState<Record<LogSource, number>>({
+    backend: 0,
+    frontend: 0,
+  });
+  const [pollInterval, setPollInterval] = useState(10);
   const [autoScroll, setAutoScroll] = useState(true);
-  const [logError, setLogError] = useState<string | null>(null);
-  const logsRef = useRef<HTMLDivElement | null>(null);
+  const [logError, setLogError] = useState<Record<LogSource, string | null>>({
+    backend: null,
+    frontend: null,
+  });
+  const fetchControllersRef = useRef<Record<LogSource, AbortController | null>>({
+    backend: null,
+    frontend: null,
+  });
+  const fetchInFlightRef = useRef<Record<LogSource, boolean>>({
+    backend: false,
+    frontend: false,
+  });
+  const backendLogsRef = useRef<HTMLDivElement | null>(null);
+  const frontendLogsRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const frontendPollInterval = pollInterval === 0 ? FRONTEND_POLL_FALLBACK_SECONDS : pollInterval;
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -73,19 +101,24 @@ export default function AdminPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!autoScroll || !logsRef.current) {
+    if (!autoScroll) {
       return;
     }
-    logsRef.current.scrollTop = logsRef.current.scrollHeight;
+    if (backendLogsRef.current) {
+      backendLogsRef.current.scrollTop = backendLogsRef.current.scrollHeight;
+    }
+    if (frontendLogsRef.current) {
+      frontendLogsRef.current.scrollTop = frontendLogsRef.current.scrollHeight;
+    }
   }, [logLines, autoScroll]);
 
   const logout = useCallback(() => {
     setToken(null);
     setUsers([]);
     setSelectedUserId(null);
-    setLogLines([]);
-    setLogCursor(0);
-    setLogError(null);
+    setLogLines({ backend: [], frontend: [] });
+    setLogCursor({ backend: 0, frontend: 0 });
+    setLogError({ backend: null, frontend: null });
     setLoginError(null);
     setUserForm({
       displayName: "",
@@ -232,37 +265,70 @@ export default function AdminPage(): JSX.Element {
   );
 
   const fetchLogs = useCallback(
-    async (initial = false) => {
+    async (source: LogSource, initial = false) => {
       if (!token) return;
-      const params = new URLSearchParams({ limit: "200" });
-      if (!initial && logCursor) {
-        params.set("cursor", String(logCursor));
+      if (fetchInFlightRef.current[source]) {
+        return;
+      }
+      fetchControllersRef.current[source]?.abort();
+      const controller = new AbortController();
+      fetchControllersRef.current[source] = controller;
+      fetchInFlightRef.current[source] = true;
+      const params = new URLSearchParams({ limit: "200", source });
+      const cursor = logCursor[source];
+      if (!initial && cursor && source === "backend") {
+        params.set("cursor", String(cursor));
       }
       try {
         const response = await fetch(`${API_BASE}/admin/logs?${params.toString()}`, {
           headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         });
         if (response.status === 401) {
           logout();
           return;
         }
         if (!response.ok) {
-          throw new Error("Failed to load logs");
+          let detail = "Failed to load logs";
+          try {
+            const payload = (await response.json()) as { detail?: string };
+            if (payload?.detail) {
+              detail = payload.detail;
+            }
+          } catch {
+            // ignore parse errors
+          }
+          throw new Error(detail);
         }
         const data = (await response.json()) as AdminLogPayload;
-        setLogCursor(data.cursor);
-        setLogError(null);
+        setLogCursor((current) => ({
+          ...current,
+          [source]: source === "backend" ? data.cursor : 0,
+        }));
+        setLogError((current) => ({ ...current, [source]: null }));
         setLogLines((current) => {
-          if (initial) {
-            return data.lines;
+          const existing = current[source];
+          let nextLines = existing;
+          if (initial || source === "frontend") {
+            nextLines = data.lines;
+          } else if (data.lines.length > 0) {
+            nextLines = [...existing, ...data.lines];
           }
-          if (data.lines.length === 0) {
-            return current;
-          }
-          return [...current, ...data.lines];
+          return { ...current, [source]: nextLines };
         });
       } catch (error) {
-        setLogError(error instanceof Error ? error.message : "Failed to load logs");
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setLogError((current) => ({
+          ...current,
+          [source]: error instanceof Error ? error.message : "Failed to load logs",
+        }));
+      } finally {
+        if (fetchControllersRef.current[source] === controller) {
+          fetchControllersRef.current[source] = null;
+        }
+        fetchInFlightRef.current[source] = false;
       }
     },
     [logCursor, logout, token]
@@ -277,27 +343,31 @@ export default function AdminPage(): JSX.Element {
       const url = new URL("/admin/logs/ws", API_BASE);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       url.searchParams.set("token", token);
+      url.searchParams.set("source", "backend");
       const socket = new WebSocket(url.toString());
       wsRef.current = socket;
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as AdminLogPayload;
-          setLogCursor(payload.cursor);
-          setLogError(null);
+          setLogCursor((current) => ({ ...current, backend: payload.cursor }));
+          setLogError((current) => ({ ...current, backend: null }));
           setLogLines((current) => {
             if (payload.reset) {
-              return payload.lines;
+              return { ...current, backend: payload.lines };
             }
             if (payload.lines.length === 0) {
               return current;
             }
-            return [...current, ...payload.lines];
+            return { ...current, backend: [...current.backend, ...payload.lines] };
           });
         } catch (error) {
-          setLogError(error instanceof Error ? error.message : "Log stream error");
+          setLogError((current) => ({
+            ...current,
+            backend: error instanceof Error ? error.message : "Log stream error",
+          }));
         }
       };
-      socket.onerror = () => setLogError("Log stream error");
+      socket.onerror = () => setLogError((current) => ({ ...current, backend: "Log stream error" }));
       socket.onclose = () => {
         if (wsRef.current === socket) {
           wsRef.current = null;
@@ -313,28 +383,46 @@ export default function AdminPage(): JSX.Element {
     wsRef.current = null;
 
     const intervalId = window.setInterval(() => {
-      void fetchLogs();
+      void fetchLogs("backend");
     }, pollInterval * 1000);
-    void fetchLogs(true);
+    void fetchLogs("backend", true);
     return () => {
       window.clearInterval(intervalId);
     };
   }, [fetchLogs, pollInterval, token]);
 
-  const handleFlushLogs = useCallback(async () => {
+  useEffect(() => {
+    if (!token) {
+      return () => undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void fetchLogs("frontend");
+    }, frontendPollInterval * 1000);
+    void fetchLogs("frontend", true);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [fetchLogs, frontendPollInterval, token]);
+
+  const handleFlushBackendLogs = useCallback(async () => {
     if (!token) return;
     try {
-      const response = await fetch(`${API_BASE}/admin/logs/flush`, {
+      const params = new URLSearchParams({ source: "backend" });
+      const response = await fetch(`${API_BASE}/admin/logs/flush?${params.toString()}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) {
         throw new Error("Failed to clear logs");
       }
-      setLogLines([]);
-      setLogCursor(0);
+      setLogLines((current) => ({ ...current, backend: [] }));
+      setLogCursor((current) => ({ ...current, backend: 0 }));
     } catch (error) {
-      setLogError(error instanceof Error ? error.message : "Failed to clear logs");
+      setLogError((current) => ({
+        ...current,
+        backend: error instanceof Error ? error.message : "Failed to clear logs",
+      }));
     }
   }, [token]);
 
@@ -349,7 +437,7 @@ export default function AdminPage(): JSX.Element {
 
   if (!token) {
     return (
-      <main className="admin-page">
+      <main className="admin-page admin-page--login">
         <section className="admin-card admin-login">
           <h1>Admin Console Access</h1>
           <p>Sign in with the bootstrap admin credentials to manage NexaQuill.</p>
@@ -543,25 +631,56 @@ export default function AdminPage(): JSX.Element {
               />
               Auto-scroll
             </label>
-            <button type="button" className="admin-button admin-button--ghost" onClick={() => setLogLines([])}>
-              Clear view
-            </button>
-            <button type="button" className="admin-button" onClick={handleFlushLogs}>
-              Flush logs
-            </button>
           </div>
         </div>
-        {logError && <p className="admin-error">{logError}</p>}
-        <div className="admin-logs" ref={logsRef}>
-          {logLines.length === 0 ? (
-            <p className="admin-hint">Logs will appear here once activity starts.</p>
-          ) : (
-            logLines.map((line, index) => (
-              <pre key={`${line}-${index}`} className="admin-log-line">
-                {line}
-              </pre>
-            ))
-          )}
+        {pollInterval === 0 && (
+          <p className="admin-hint">Live mode applies to backend only; frontend continues polling.</p>
+        )}
+        <div className="admin-logs-grid">
+          {LOG_SOURCES.map((option) => {
+            const source = option.value as LogSource;
+            const isBackend = source === "backend";
+            const lines = logLines[source];
+            const error = logError[source];
+            const logRef = isBackend ? backendLogsRef : frontendLogsRef;
+            return (
+              <div key={source} className="admin-logs-panel">
+                <div className="admin-logs-panel__head">
+                  <h3 className="admin-logs-panel__title">{option.label}</h3>
+                  <div className="admin-actions">
+                    <button
+                      type="button"
+                      className="admin-button admin-button--ghost admin-button--compact"
+                      onClick={() => setLogLines((current) => ({ ...current, [source]: [] }))}
+                    >
+                      Clear
+                    </button>
+                    {isBackend && (
+                      <button
+                        type="button"
+                        className="admin-button admin-button--compact"
+                        onClick={handleFlushBackendLogs}
+                      >
+                        Flush
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {error && <p className="admin-error">{error}</p>}
+                <div className="admin-logs" ref={logRef}>
+                  {lines.length === 0 ? (
+                    <p className="admin-hint">Logs will appear here once activity starts.</p>
+                  ) : (
+                    lines.map((line, index) => (
+                      <pre key={`${line}-${index}`} className="admin-log-line">
+                        {line}
+                      </pre>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
     </main>
